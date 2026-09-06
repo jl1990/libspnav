@@ -24,6 +24,9 @@ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
 IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
 OF SUCH DAMAGE.
 */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +35,7 @@ OF SUCH DAMAGE.
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/select.h>
@@ -68,7 +72,7 @@ enum {
 static int read_event(int s, spnav_event *event);
 static int proc_event(int *data, spnav_event *event);
 
-static void flush_resp(void);
+static int flush_resp(void);
 static int wait_resp(void *buf, int sz, int timeout_ms);
 static int request(int req, struct reqresp *rr, int timeout_ms);
 static int request_str(int req, char *buf, int bufsz, int timeout_ms);
@@ -107,12 +111,6 @@ int spnav_open(void)
 		return -1;
 	}
 
-	if(!(ev_queue = malloc(sizeof *ev_queue))) {
-		return -1;
-	}
-	ev_queue->next = 0;
-	ev_queue_tail = ev_queue;
-
 	if((s = socket(PF_UNIX, SOCK_STREAM, 0)) == -1) {
 		return -1;
 	}
@@ -130,7 +128,7 @@ int spnav_open(void)
 			while(*ptr && isspace(*ptr)) ptr++;
 			if(!*ptr || *ptr == '#') continue;	/* comment or empty line */
 
-			if(memcmp(ptr, "socket", 6) == 0 && (ptr = strchr(ptr, '='))) {
+			if(strncmp(ptr, "socket", 6) == 0 && (ptr = strchr(ptr, '='))) {
 				while(*++ptr && isspace(*ptr));
 				if(!*ptr) continue;
 				path = ptr;
@@ -139,6 +137,7 @@ int spnav_open(void)
 				break;
 			}
 		}
+		fclose(fp);
 		if(path && connect_afunix(s, path) == 0) goto success;
 	}
 
@@ -149,6 +148,13 @@ int spnav_open(void)
 	}
 
 success:
+	/* Failed retries must not leak a queue or partially initialize globals. */
+	if(!(ev_queue = malloc(sizeof *ev_queue))) {
+		close(s);
+		return -1;
+	}
+	ev_queue->next = 0;
+	ev_queue_tail = ev_queue;
 	sock = s;
 	proto = 0;
 
@@ -202,13 +208,14 @@ int spnav_close(void)
 		return -1;
 	}
 
-	if(sock) {
+	if(sock != -1) {
 		while(ev_queue) {
 			void *tmp = ev_queue;
 			ev_queue = ev_queue->next;
 			free(tmp);
 		}
 
+		ev_queue_tail = 0;
 		close(sock);
 		sock = -1;
 		return 0;
@@ -681,18 +688,24 @@ int catch_badwin(Display *dpy, XErrorEvent *err)
 }
 #endif
 
-static void flush_resp(void)
+static int flush_resp(void)
 {
 	int res;
 	char buf[256];
 	fd_set rdset;
-	struct timeval tv = {0};
+	struct timeval tv;
 
-	FD_ZERO(&rdset);
-	FD_SET(sock, &rdset);
-
-	while((res = select(sock + 1, &rdset, 0, 0, &tv)) > 0 || (res == -1 && errno == EINTR)) {
-		read(sock, buf, sizeof buf);
+	for(;;) {
+		FD_ZERO(&rdset);
+		FD_SET(sock, &rdset);
+		tv.tv_sec = tv.tv_usec = 0;
+		res = select(sock + 1, &rdset, 0, 0, &tv);
+		if(res < 0 && errno == EINTR) continue;
+		if(res <= 0) return res;
+		res = read(sock, buf, sizeof buf);
+		if(res < 0 && errno == EINTR) continue;
+		/* EOF stays readable forever: terminate rather than spinning. */
+		if(res <= 0) return -1;
 	}
 }
 
@@ -701,44 +714,49 @@ static int wait_resp(void *buf, int sz, int timeout_ms)
 	int res;
 	fd_set rdset;
 	struct timeval tv;
-	char *ptr;
+	struct timespec started, now;
+	char *ptr = buf;
 
-	if(timeout_ms) {
+	if(timeout_ms > 0 && clock_gettime(CLOCK_MONOTONIC, &started) < 0) return -1;
+	while(sz > 0) {
 		FD_ZERO(&rdset);
 		FD_SET(sock, &rdset);
-
+		tv.tv_sec = tv.tv_usec = 0;
 		if(timeout_ms > 0) {
-			tv.tv_sec = timeout_ms / 1000;
-			tv.tv_usec = (timeout_ms % 1000) * 1000;
+			long elapsed, remaining;
+			if(clock_gettime(CLOCK_MONOTONIC, &now) < 0) return -1;
+			elapsed = (now.tv_sec - started.tv_sec) * 1000 + (now.tv_nsec - started.tv_nsec) / 1000000;
+			remaining = timeout_ms - elapsed;
+			if(remaining <= 0) return -1;
+			tv.tv_sec = remaining / 1000;
+			tv.tv_usec = (remaining % 1000) * 1000;
 		}
-
-		while((res = select(sock + 1, &rdset, 0, 0, timeout_ms < 0 ? 0 : &tv)) == -1 && errno == EINTR);
+		res = select(sock + 1, &rdset, 0, 0, timeout_ms < 0 ? 0 : &tv);
+		if(res < 0 && errno == EINTR) continue;
+		if(res <= 0) return -1;
+		res = read(sock, ptr, sz);
+		if(res < 0 && errno == EINTR) continue;
+		if(res <= 0) return -1;
+		ptr += res;
+		sz -= res;
 	}
-
-	if(!timeout_ms || (res > 0 && FD_ISSET(sock, &rdset))) {
-		ptr = buf;
-		while(sz > 0) {
-			if((res = read(sock, ptr, sz)) <= 0 && errno != EINTR) {
-				return -1;
-			}
-			ptr += res;
-			sz -= res;
-		}
-		return 0;
-	}
-	return -1;
+	return 0;
 }
 
 static int request(int req, struct reqresp *rr, int timeout_ms)
 {
 	if(sock < 0 || proto < 1) return -1;
 
-	flush_resp();
+	if(flush_resp() < 0) return -1;
 
 	req |= REQ_TAG;
 	rr->type = req;
 
-	write(sock, rr, sizeof *rr);
+#ifdef MSG_NOSIGNAL
+	if(send(sock, rr, sizeof *rr, MSG_NOSIGNAL) != sizeof *rr) return -1;
+#else
+	if(write(sock, rr, sizeof *rr) != sizeof *rr) return -1;
+#endif
 	if(wait_resp(rr, sizeof *rr, timeout_ms) == -1) {
 		return -1;
 	}

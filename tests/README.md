@@ -21,3 +21,6 @@ registration. It sends an acknowledged app-ID string of at most 255 UTF-8 bytes.
 An empty ID means no focus; closing the connection releases provider ownership.
 Tests cover string chunking, empty IDs, and input validation. GNOME adapter
 activation and native Wayland profile switching await a login-session test.
+
+Connection tests additionally check file/event-queue cleanup, descriptor zero,
+closed-peer handling, interrupted reads, and deadlines for partial responses.
