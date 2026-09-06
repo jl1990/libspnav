@@ -366,6 +366,28 @@ int spnav_cfg_get_swapyz(void);
  * SPNAV_CFG_LED_OFF | SPNAV_CFG_LED_ON | SPNAV_CFG_LED_AUTO
  * cfgfile option: led
  */
+/* LCD flags. Disabling the screen switches its backlight off.
+ * Get returns flags or -1 for unsupported/error. Set accepts flags 0..3 and
+ * returns 0 when accepted, -1 on error. Refresh returns 0 only if uploaded.
+ */
+#define SPNAV_LCD_ENABLED 1
+#define SPNAV_LCD_PROFILE 2
+int spnav_cfg_set_lcd(int flags);
+int spnav_cfg_get_lcd(void);
+int spnav_lcd_refresh(void);
+/* Backlight percentage 0..100; retained when the screen is switched off. */
+int spnav_cfg_set_lcd_brightness(int percent);
+int spnav_cfg_get_lcd_brightness(void);
+/* Idle timeout in seconds, 0 disables sleep, maximum 86400. -1 on error. */
+int spnav_cfg_set_lcd_idle(int seconds);
+int spnav_cfg_get_lcd_idle(void);
+/* LED idle seconds: 0=never, maximum 86400. -1 on error/unsupported. */
+int spnav_cfg_set_led_idle(int seconds);
+int spnav_cfg_get_led_idle(void);
+/* Session focus providers only. Empty ID clears focus, close releases ownership.
+ * Max 255 UTF-8 bytes, returns 0 accepted or -1 error. Not app registration. */
+int spnav_set_focus(const char *app_id);
+
 int spnav_cfg_set_led(int state);
 int spnav_cfg_get_led(void);	/* returns led setting, -1 on error */
 

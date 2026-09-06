@@ -739,7 +739,7 @@ static int request(int req, struct reqresp *rr, int timeout_ms)
 	rr->type = req;
 
 	write(sock, rr, sizeof *rr);
-	if(wait_resp(rr, sizeof *rr, TIMEOUT) == -1) {
+	if(wait_resp(rr, sizeof *rr, timeout_ms) == -1) {
 		return -1;
 	}
 
@@ -1123,4 +1123,89 @@ int spnav_cfg_set_socket(const char *devpath)
 int spnav_cfg_get_socket(char *buf, int bufsz)
 {
 	return request_str(REQ_GCFG_SOCKET, buf, bufsz, TIMEOUT);
+}
+
+int spnav_cfg_set_lcd(int flags)
+{
+	struct reqresp rr = {0};
+	if(flags < 0 || (flags & ~(SPNAV_LCD_ENABLED | SPNAV_LCD_PROFILE))) return -1;
+	rr.data[0] = flags;
+	return request(REQ_SCFG_LCD, &rr, 2000);
+}
+
+int spnav_cfg_get_lcd(void)
+{
+	struct reqresp rr = {0};
+	if(request(REQ_GCFG_LCD, &rr, 2000) == -1) return -1;
+	return rr.data[0];
+}
+
+int spnav_lcd_refresh(void)
+{
+	struct reqresp rr = {0};
+	return request(REQ_LCD_REFRESH, &rr, 2000);
+}
+
+int spnav_cfg_set_lcd_brightness(int percent)
+{
+	struct reqresp rr = {0};
+	if(percent < 0 || percent > 100) return -1;
+	rr.data[0] = percent;
+	return request(REQ_SCFG_LCD_BRIGHTNESS, &rr, 2000);
+}
+
+int spnav_cfg_get_lcd_brightness(void)
+{
+	struct reqresp rr = {0};
+	if(request(REQ_GCFG_LCD_BRIGHTNESS, &rr, 2000) == -1) return -1;
+	return rr.data[0];
+}
+
+int spnav_cfg_set_lcd_idle(int seconds)
+{
+	struct reqresp rr = {0};
+	if(seconds < 0 || seconds > 86400) return -1;
+	rr.data[0] = seconds;
+	return request(REQ_SCFG_LCD_IDLE, &rr, 2000);
+}
+
+int spnav_cfg_get_lcd_idle(void)
+{
+	struct reqresp rr = {0};
+	if(request(REQ_GCFG_LCD_IDLE, &rr, 2000) == -1) return -1;
+	return rr.data[0];
+}
+
+int spnav_set_focus(const char *app_id)
+{
+	struct reqresp rr;
+	int len, offset = 0, count;
+	const unsigned char *p;
+	if(!app_id || strlen(app_id) > 255) return -1;
+	for(p = (const unsigned char*)app_id; *p; p++) if(*p < 32 || *p == 127) return -1;
+	len = strlen(app_id);
+	do {
+		memset(&rr, 0, sizeof rr);
+		count = len - offset;
+		rr.data[6] = count | (offset ? REQSTR_CONT_BIT : 0);
+		if(count > REQSTR_CHUNK_SIZE) count = REQSTR_CHUNK_SIZE;
+		memcpy(rr.data, app_id + offset, count);
+		if(request(REQ_SET_FOCUS, &rr, 2000) < 0) return -1;
+		offset += count;
+	} while(offset < len);
+	return 0;
+}
+
+int spnav_cfg_set_led_idle(int seconds)
+{
+	struct reqresp rr = {0};
+	if(seconds < 0 || seconds > 86400) return -1;
+	rr.data[0] = seconds;
+	return request(REQ_SCFG_LED_IDLE, &rr, 2000);
+}
+int spnav_cfg_get_led_idle(void)
+{
+	struct reqresp rr = {0};
+	if(request(REQ_GCFG_LED_IDLE, &rr, 2000) < 0) return -1;
+	return rr.data[0];
 }
