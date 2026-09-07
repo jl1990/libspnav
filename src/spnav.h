@@ -409,3 +409,5 @@ int spnav_cfg_get_socket(char *buf, int bufsz);
 #endif
 
 #endif	/* SPACENAV_H_ */
+
+#include "spnav_profiles.h"

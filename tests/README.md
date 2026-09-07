@@ -24,3 +24,20 @@ activation and native Wayland profile switching await a login-session test.
 
 Connection tests additionally check file/event-queue cleanup, descriptor zero,
 closed-peer handling, interrupted reads, and deadlines for partial responses.
+
+Profile snapshots are declared in `spnav_profiles.h`: read, edit the copied
+snapshot, and apply it. Index zero is Default; application profiles follow.
+`source_index` retains legacy settings during rename/duplication. Keep it from the
+original snapshot (use zero for a new profile). After a successful apply, refresh
+indices to their new positions or read a new snapshot. Returns: 0 success,
+-1 invalid/unavailable, -2 revision conflict, -3 unsupported key.
+
+The local wire layout contains only 32-bit integers and fixed-size character
+arrays, uses native byte order like the existing protocol, and starts with a
+version and revision. Do not store the binary struct as a persistent file format.
+Transfers use BEGIN (0x3f10), READ/WRITE chunks of 24 bytes, APPLY, ACTIVE, FOCUS,
+and CAPTURE (0x3f16). BEGIN returns the exact struct size. Writes must start at
+offset zero and proceed in order; APPLY requires the complete snapshot. CAPTURE
+suppresses mappings for ten seconds to identify physical buttons. Snapshot tests
+also inject device events between protocol responses to ensure inputs do not
+corrupt a transfer.

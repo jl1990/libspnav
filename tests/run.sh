@@ -13,3 +13,6 @@ ${CC:-cc} -g -Wall ${TEST_CFLAGS:-} -DSPNAV_CONFIG_H_ -ffunction-sections -fdata
 ${CC:-cc} -g -Wall ${TEST_CFLAGS:-} -DSPNAV_CONFIG_H_ -ffunction-sections -fdata-sections \
  -Isrc tests/test_request_io.c -Wl,--gc-sections -o "$build/test_request_io"
 "$build/test_request_io"
+${CC:-cc} -g -Wall ${TEST_CFLAGS:-} -DSPNAV_CONFIG_H_ -ffunction-sections -fdata-sections \
+ -Isrc tests/test_profiles.c -Wl,--gc-sections -o "$build/test_profiles"
+"$build/test_profiles"

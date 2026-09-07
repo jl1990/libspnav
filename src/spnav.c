@@ -392,6 +392,7 @@ static int read_event(int s, spnav_event *event)
 		}
 
 		memcpy(event, &node->event, sizeof *event);
+		if(event->type == SPNAV_EVENT_MOTION) event->motion.data = &event->motion.x;
 		free(node);
 		return event->type;
 	}
@@ -688,25 +689,23 @@ int catch_badwin(Display *dpy, XErrorEvent *err)
 }
 #endif
 
+static int queue_wire_event(struct reqresp *rr)
+{
+ spnav_event event;
+ if(!proc_event((int32_t*)rr,&event))return 0;
+ return ev_queue ? enqueue_event(&event,0) : -1;
+}
+
 static int flush_resp(void)
 {
-	int res;
-	char buf[256];
-	fd_set rdset;
-	struct timeval tv;
-
-	for(;;) {
-		FD_ZERO(&rdset);
-		FD_SET(sock, &rdset);
-		tv.tv_sec = tv.tv_usec = 0;
-		res = select(sock + 1, &rdset, 0, 0, &tv);
-		if(res < 0 && errno == EINTR) continue;
-		if(res <= 0) return res;
-		res = read(sock, buf, sizeof buf);
-		if(res < 0 && errno == EINTR) continue;
-		/* EOF stays readable forever: terminate rather than spinning. */
-		if(res <= 0) return -1;
-	}
+ int res;fd_set rdset;struct timeval tv;struct reqresp rr;
+ for(;;){
+  FD_ZERO(&rdset);FD_SET(sock,&rdset);tv.tv_sec=tv.tv_usec=0;
+  res=select(sock+1,&rdset,0,0,&tv);
+  if(res<0 && errno==EINTR)continue;
+  if(res<=0)return res;
+  if(wait_resp(&rr,sizeof rr,TIMEOUT)<0 || queue_wire_event(&rr)<0)return -1;
+ }
 }
 
 static int wait_resp(void *buf, int sz, int timeout_ms)
@@ -757,8 +756,20 @@ static int request(int req, struct reqresp *rr, int timeout_ms)
 #else
 	if(write(sock, rr, sizeof *rr) != sizeof *rr) return -1;
 #endif
-	if(wait_resp(rr, sizeof *rr, timeout_ms) == -1) {
-		return -1;
+	{
+		struct timespec started,now;
+		int remaining=timeout_ms;
+		if(timeout_ms>0 && clock_gettime(CLOCK_MONOTONIC,&started)<0)return -1;
+		for(;;){
+			if(wait_resp(rr,sizeof *rr,remaining)<0)return -1;
+			if(rr->type==req)break;
+			if(rr->type<0 || rr->type>=MAX_UEV || queue_wire_event(rr)<0)return -1;
+			if(timeout_ms>0){
+				if(clock_gettime(CLOCK_MONOTONIC,&now)<0)return -1;
+				remaining=timeout_ms-(now.tv_sec-started.tv_sec)*1000-(now.tv_nsec-started.tv_nsec)/1000000;
+				if(remaining<=0)return -1;
+			}
+		}
 	}
 
 	/* XXX assuming data[6] is always status */
@@ -1226,4 +1237,47 @@ int spnav_cfg_get_led_idle(void)
 	struct reqresp rr = {0};
 	if(request(REQ_GCFG_LED_IDLE, &rr, 2000) < 0) return -1;
 	return rr.data[0];
+}
+
+/* Snapshot transfers use the same fixed 24-byte payload as string requests. */
+int spnav_profiles_read(struct spnav_profile_set *s)
+{
+ struct reqresp rr;int off,n;
+ if(!s)return -1;
+ memset(&rr,0,sizeof rr);
+ if(request(REQ_PROFILE_BEGIN,&rr,1000)<0 || rr.data[0]!=sizeof *s)return -1;
+ for(off=0;off<(int)sizeof *s;off+=n) {
+  memset(&rr,0,sizeof rr);rr.data[0]=off;
+  if(request(REQ_PROFILE_READ,&rr,1000)<0)return -1;
+  n=sizeof *s-off;if(n>24)n=24;memcpy((char*)s+off,rr.data,n);
+ }
+ return s->version==1 && s->count>=1 && s->count<=17 ? 0 : -1;
+}
+int spnav_profiles_apply(struct spnav_profile_set *s)
+{
+ struct reqresp rr;int off,n,res;
+ if(!s)return -1;
+ memset(&rr,0,sizeof rr);rr.data[0]=1;
+ if(request(REQ_PROFILE_BEGIN,&rr,1000)<0 || rr.data[0]!=sizeof *s)return -1;
+ for(off=0;off<(int)sizeof *s;off+=n) {
+  memset(&rr,0,sizeof rr);n=sizeof *s-off;if(n>24)n=24;
+  memcpy(rr.data,(char*)s+off,n);rr.data[6]=off;
+  if(request(REQ_PROFILE_WRITE,&rr,1000)<0)return -1;
+ }
+ memset(&rr,0,sizeof rr);res=request(REQ_PROFILE_APPLY,&rr,2000);
+ if(res<0)return rr.data[6]==-2 || rr.data[6]==-3 ? rr.data[6] : -1;
+ s->revision=rr.data[0];return 0;
+}
+int spnav_profile_active(void)
+{
+ struct reqresp rr;memset(&rr,0,sizeof rr);
+ return request(REQ_PROFILE_ACTIVE,&rr,500)<0 ? -1 : rr.data[0];
+}
+int spnav_profile_focus(char *buf,int size)
+{ return !buf || size<1 ? -1 : request_str(REQ_PROFILE_FOCUS,buf,size,500); }
+
+int spnav_profile_capture(int enable)
+{
+ struct reqresp rr;memset(&rr,0,sizeof rr);rr.data[0]=enable!=0;
+ return request(REQ_PROFILE_CAPTURE,&rr,500);
 }
